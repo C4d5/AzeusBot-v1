@@ -129,6 +129,7 @@ E sempre vai ser.`;
 
   if (interaction.commandName === "marcus") {
     await interaction.reply("VIADO");
+     await interaction.followUp("Aqui está a segunda mensagem! 🎉");
     return;
   }
 
@@ -180,9 +181,13 @@ const commands = [
     .setName("marcus")
     .setDescription("mensagem do marcus"),
 
-  new SlashCommandBuilder().setName("hb").setDescription("mensagem do hb"),
+  new SlashCommandBuilder()
+  .setName("hb")
+  .setDescription("mensagem do hb"),
 
-  new SlashCommandBuilder().setName("guia").setDescription("mensagem do guia"),
+  new SlashCommandBuilder()
+  .setName("guia")
+  .setDescription("mensagem do guia"),
 
   new SlashCommandBuilder()
     .setName("amaldiçoado")

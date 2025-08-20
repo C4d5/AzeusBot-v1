@@ -37,7 +37,7 @@ client.on("messageCreate", async (message) => {
         if (typeof resultado === "number" && !isNaN(resultado)) {
           await message.reply({
             content: `${resultado}`,
-            allowedMentions: { repliedUser: false }, // laranjinha sem marcar
+            allowedMentions: { repliedUser: false },
           });
         }
       } catch {
@@ -84,7 +84,6 @@ client.on("messageCreate", async (message) => {
     return { modificador, formatted: parts.join(" ") };
   };
 
-  // Parser de expressão "XdY" com k/kh/kl e mods em qualquer ordem
   const parseDiceExpr = (exprStr) => {
     const m = exprStr.match(/^(\d*)d(\d+)?/i);
     if (!m) return null;
@@ -92,25 +91,22 @@ client.on("messageCreate", async (message) => {
     const count = Math.min(parseInt(m[1] || "1", 10), 100);
     const faces = parseInt(m[2] || "20", 10);
 
-    // k/kh/kl (em qualquer lugar)
     const kMatch = exprStr.match(/(kh|kl|k)(\d+)?/i);
     const kType = kMatch ? kMatch[1].toLowerCase() : null;
     const kQtd = kMatch ? parseInt(kMatch[2] || "1", 10) : 1;
 
-    // Mods (em qualquer lugar)
     const { modificador, formatted } = parseMods(exprStr);
 
     return { count, faces, kType, kQtd, modificador, formattedMods: formatted };
   };
 
-  // Suporte a N#XdY (repete N vezes a expressão XdY)
   let repeats = 1;
   let expr = comando;
 
   if (comando.includes("#")) {
     const [repStr, right] = comando.split("#", 2);
     const maybeRepeats = parseInt(repStr, 10);
-    if (!right || isNaN(maybeRepeats) || maybeRepeats <= 0) return; // evita "#" sozinho
+    if (!right || isNaN(maybeRepeats) || maybeRepeats <= 0) return;
     repeats = Math.min(maybeRepeats, 100);
     expr = right.trim();
   }
@@ -118,10 +114,15 @@ client.on("messageCreate", async (message) => {
   const parsed = parseDiceExpr(expr);
   if (!parsed) return;
 
-  const { count: innerCount, faces, kType, kQtd, modificador, formattedMods } =
-    parsed;
+  const {
+    count: innerCount,
+    faces,
+    kType,
+    kQtd,
+    modificador,
+    formattedMods,
+  } = parsed;
 
-  // ==================== ROLAGEM ====================
   const allEqualReactions = [
     "💥 pqp kk",
     "🎲 todos iguais, que azar kkkkk",
@@ -140,60 +141,13 @@ client.on("messageCreate", async (message) => {
     formattedMods ? ` ${formattedMods}` : ""
   }`;
 
-  // Se for repetição (N#XdY): gerar N linhas independentes
-  if (repeats > 1) {
-    const linhas = [];
-
-    for (let i = 0; i < repeats; i++) {
-      // rola os X dados
-      let resultados = rollDice(innerCount, faces);
-      let exibicao = [...resultados];
-
-      // explosão
-      if (explode) {
-        let extras = handleExplode(resultados, faces);
-        totalExtras += extras;
-        while (extras > 0) {
-          const newRolls = rollDice(extras, faces);
-          resultados.push(...newRolls);
-          exibicao.push(...newRolls);
-          extras = handleExplode(newRolls, faces);
-          totalExtras += extras;
-        }
-      }
-
-      // aplica keep highest/lowest se tiver
-      const escolhidos = kType ? selectK(exibicao, kType, kQtd) : exibicao;
-      const total = escolhidos.reduce((a, b) => a + b, 0) + modificador;
-
-      let totalComEmoji = `${total}`;
-      if (escolhidos.includes(1)) totalComEmoji += " 💀";
-      if (escolhidos.includes(faces)) totalComEmoji += " 🥵";
-
-      const exibicaoFmt = exibicao
-        .map((r) => (r === 1 ? `${r} 💀` : r === faces ? `${r} 🥵` : `${r}`))
-        .join(", ");
-
-      linhas.push(`**${totalComEmoji}** <-- [ ${exibicaoFmt} ] ${tailDisplay}`);
-
-      if (!pushedEqualReaction && innerCount > 1 && allEqual(exibicao)) {
-        linhas.push(
-          allEqualReactions[Math.floor(Math.random() * allEqualReactions.length)]
-        );
-        pushedEqualReaction = true;
-      }
-    }
-
-    resposta = linhas.join("\n");
-    if (explode) resposta += `\n(${totalExtras} dados extras rolados) !`;
-  } else {
-    // Caso padrão (sem #): uma única expressão
-    let resultados = rollDice(innerCount, faces);
+  // ---------------- ROLAGEM ----------------
+  const processRolls = (resultados) => {
     let exibicao = [...resultados];
 
     if (explode) {
       let extras = handleExplode(resultados, faces);
-      totalExtras = extras;
+      totalExtras += extras;
       while (extras > 0) {
         const newRolls = rollDice(extras, faces);
         resultados.push(...newRolls);
@@ -206,33 +160,57 @@ client.on("messageCreate", async (message) => {
     const escolhidos = kType ? selectK(exibicao, kType, kQtd) : exibicao;
     const total = escolhidos.reduce((a, b) => a + b, 0) + modificador;
 
-    let totalComEmoji = `${total}`;
-    if (escolhidos.includes(1)) totalComEmoji += " 💀";
-    if (escolhidos.includes(faces)) totalComEmoji += " 🥵";
+    // ---------------- EMOJIS NO TOTAL ----------------
+    const hasMin = escolhidos.includes(1);
+    const hasMax = escolhidos.includes(faces);
+    let emoji = "";
+    if (hasMin && hasMax) emoji = "🥶";
+    else if (hasMin) emoji = "💀";
+    else if (hasMax) emoji = "🥵";
 
-    const exibicaoFmt = exibicao
-      .map((r) => (r === 1 ? `${r} 💀` : r === faces ? `${r} 🥵` : `${r}`))
-      .join(", ");
+    const totalComEmoji = `${total}${emoji}`;
+    const exibicaoFmt = exibicao.join(", ");
+
+    return { totalComEmoji, exibicaoFmt };
+  };
+
+  if (repeats > 1) {
+    const linhas = [];
+    for (let i = 0; i < repeats; i++) {
+      const resultados = rollDice(innerCount, faces);
+      const { totalComEmoji, exibicaoFmt } = processRolls(resultados);
+
+      linhas.push(`**${totalComEmoji}** <-- [ ${exibicaoFmt} ] ${tailDisplay}`);
+
+      if (!pushedEqualReaction && innerCount > 1 && allEqual(resultados)) {
+        linhas.push(
+          allEqualReactions[
+            Math.floor(Math.random() * allEqualReactions.length)
+          ],
+        );
+        pushedEqualReaction = true;
+      }
+    }
+    resposta = linhas.join("\n");
+    if (explode) resposta += `\n(${totalExtras} dados extras rolados) !`;
+  } else {
+    const resultados = rollDice(innerCount, faces);
+    const { totalComEmoji, exibicaoFmt } = processRolls(resultados);
 
     resposta = `**${totalComEmoji}** <-- [ ${exibicaoFmt} ] ${tailDisplay}`;
-
     if (explode) resposta += `\n(${totalExtras} dados extras rolados) !`;
-    if (innerCount > 1 && allEqual(exibicao)) {
+    if (innerCount > 1 && allEqual(resultados)) {
       resposta += `\n${
         allEqualReactions[Math.floor(Math.random() * allEqualReactions.length)]
       }`;
     }
   }
 
-  // ==================== ENVIO ====================
   await message.reply({
     content: resposta.trim(),
-    allowedMentions: { repliedUser: false }, // laranjinha sem marcar
+    allowedMentions: { repliedUser: false },
   });
 });
-
-
-
 
 // ---------------- Slash Commands ----------------
 // (restante do código de slash commands, embeds e registro permanecem iguais)
@@ -276,11 +254,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
   // ---------------- Comandos normais ----------------
   switch (interaction.commandName) {
     case "eusd":
-      await interaction.reply("https://cdn.discordapp.com/attachments/1263135959306862672/1407619098438926456/Projeto_10-19_HD_720p_MEDIUM_FR30.mp4?ex=68a6c2f1&is=68a57171&hm=010af28477a62ffef466c2962c77025bbce06c0c4459ea4d6dc8e4813158465b&");
+      await interaction.reply(
+        "https://cdn.discordapp.com/attachments/1263135959306862672/1407619098438926456/Projeto_10-19_HD_720p_MEDIUM_FR30.mp4?ex=68a6c2f1&is=68a57171&hm=010af28477a62ffef466c2962c77025bbce06c0c4459ea4d6dc8e4813158465b&",
+      );
       break;
-      
-      
-      
+
     case "especialista":
       await interaction.reply(
         `土 Júpiter [ORDO] — 01/08/2025

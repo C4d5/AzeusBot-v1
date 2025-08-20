@@ -20,89 +20,224 @@ const client = new Client({
   ],
 });
 
-// ---------------- Mensagens de texto e roladas de dados ----------------
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
   const content = message.content.trim();
 
-  // Calculadora simples
-  const calcRegex = /^[-+/*\d\s.()]+$/;
-  if (calcRegex.test(content)) {
-    try {
-      const safeEval = (expr) => Function(`"use strict"; return (${expr})`)();
-      const resultado = safeEval(content);
-      if (typeof resultado === "number" && !isNaN(resultado)) {
-        await message.reply(`${resultado}`);
-        return;
+  // ==================== CALCULADORA SIMPLES ====================
+  if (content.toLowerCase().startsWith("c")) {
+    const expr = content.slice(1).trim();
+    const calcRegex = /^[+\-/*\d\s.()]+$/;
+
+    if (calcRegex.test(expr)) {
+      try {
+        const safeEval = new Function(`"use strict"; return (${expr})`);
+        const resultado = safeEval();
+        if (typeof resultado === "number" && !isNaN(resultado)) {
+          await message.reply({
+            content: `${resultado}`,
+            allowedMentions: { repliedUser: false }, // laranjinha sem marcar
+          });
+        }
+      } catch {
+        await message.reply({
+          content: "❌ Expressão inválida.",
+          allowedMentions: { repliedUser: false },
+        });
       }
-    } catch {}
-  }
-
-  // Rolagem de dados
-  const regex = /^(\d*)([d#])d?(100|20|12|10|8|6|4|3|2)([+\-]\d+)?$/i;
-  const match = content.match(regex);
-  if (!match) return;
-
-  let quantidade = parseInt(match[1]) || 1;
-  const separador = match[2];
-  const faces = parseInt(match[3]);
-  const modificadorStr = match[4] || "";
-  const modificador = modificadorStr ? parseInt(modificadorStr) : 0;
-
-  if (quantidade > 100) {
-    await message.reply("❌ Não posso rolar mais de 100 dados de uma vez. ❌");
+    }
     return;
   }
 
-  const resultados = [];
-  const exibicao = [];
+  // ==================== DADOS ====================
+  const explode = content.endsWith("!");
+  const comando = explode ? content.slice(0, -1).trim() : content;
 
-  for (let i = 0; i < quantidade; i++) {
-    const resultado = Math.floor(Math.random() * faces) + 1;
-    resultados.push(resultado);
+  // ---------- Helpers ----------
+  const rollDice = (n, f) =>
+    Array.from({ length: n }, () => Math.floor(Math.random() * f) + 1);
 
-    if (resultado === 1) exibicao.push(`${resultado} 💀`);
-    else if (resultado === faces && (faces === 20 || faces === 100)) exibicao.push(`${resultado} 😋`);
-    else exibicao.push(`${resultado}`);
+  const handleExplode = (rolls, f) => rolls.filter((r) => r === f).length;
+
+  const allEqual = (arr) => arr.length > 0 && arr.every((v) => v === arr[0]);
+
+  const selectK = (arr, type, qty) => {
+    const sorted = [...arr].sort((a, b) => (type === "kl" ? a - b : b - a));
+    return sorted.slice(0, Math.max(0, Math.min(qty, arr.length)));
+  };
+
+  const modMap = { t: 5, v: 10, e: 15 };
+
+  const parseMods = (str) => {
+    const tokens = str.match(/[+\-](?:\d+|[tve])/gi) || [];
+    let modificador = 0;
+    const parts = [];
+    for (const m of tokens) {
+      const sign = m[0];
+      const token = m.slice(1).toLowerCase();
+      const isSym = /[tve]/i.test(token);
+      const val = isSym ? modMap[token] : parseInt(token, 10);
+      modificador += (sign === "+" ? 1 : -1) * val;
+      parts.push(`${sign} ${isSym ? token : val}`);
+    }
+    return { modificador, formatted: parts.join(" ") };
+  };
+
+  // Parser de expressão "XdY" com k/kh/kl e mods em qualquer ordem
+  const parseDiceExpr = (exprStr) => {
+    const m = exprStr.match(/^(\d*)d(\d+)?/i);
+    if (!m) return null;
+
+    const count = Math.min(parseInt(m[1] || "1", 10), 100);
+    const faces = parseInt(m[2] || "20", 10);
+
+    // k/kh/kl (em qualquer lugar)
+    const kMatch = exprStr.match(/(kh|kl|k)(\d+)?/i);
+    const kType = kMatch ? kMatch[1].toLowerCase() : null;
+    const kQtd = kMatch ? parseInt(kMatch[2] || "1", 10) : 1;
+
+    // Mods (em qualquer lugar)
+    const { modificador, formatted } = parseMods(exprStr);
+
+    return { count, faces, kType, kQtd, modificador, formattedMods: formatted };
+  };
+
+  // Suporte a N#XdY (repete N vezes a expressão XdY)
+  let repeats = 1;
+  let expr = comando;
+
+  if (comando.includes("#")) {
+    const [repStr, right] = comando.split("#", 2);
+    const maybeRepeats = parseInt(repStr, 10);
+    if (!right || isNaN(maybeRepeats) || maybeRepeats <= 0) return; // evita "#" sozinho
+    repeats = Math.min(maybeRepeats, 100);
+    expr = right.trim();
   }
 
-  const todosIguais = resultados.every((r) => r === resultados[0]);
+  const parsed = parseDiceExpr(expr);
+  if (!parsed) return;
 
-  if (separador === "#") {
-    let linhas = resultados.map((valor) => {
-      const valorComMod = valor + modificador;
-      const emoji =
-        valor === 1
-          ? " 💀"
-          : valor === faces && (faces === 20 || faces === 100)
-          ? " 😋"
-          : "";
-      return `**${valorComMod}** <-- [ ${valor}${emoji} ] ${quantidade}#d${faces} ${
-        modificador !== 0 ? (modificador > 0 ? "+" : "") + modificador : ""
-      }`;
-    });
+  const { count: innerCount, faces, kType, kQtd, modificador, formattedMods } =
+    parsed;
 
-    if (todosIguais && quantidade > 1) linhas.push("💥 pqp kk");
+  // ==================== ROLAGEM ====================
+  const allEqualReactions = [
+    "💥 pqp kk",
+    "🎲 todos iguais, que azar kkkkk",
+    "🔥 o RNG bugou, tudo igual!",
+    "😱 mano, todos os dados saíram iguais!",
+    "🤯 estatisticamente improvável, mas rolou!",
+    "😂 isso é hack, só pode",
+  ];
 
-    await message.reply(linhas.join("\n"));
+  let resposta = "";
+  let totalExtras = 0;
+  let pushedEqualReaction = false;
+
+  const kDisplay = kType ? `${kType}${kQtd}` : "";
+  const tailDisplay = `${innerCount}d${faces}${kDisplay}${
+    formattedMods ? ` ${formattedMods}` : ""
+  }`;
+
+  // Se for repetição (N#XdY): gerar N linhas independentes
+  if (repeats > 1) {
+    const linhas = [];
+
+    for (let i = 0; i < repeats; i++) {
+      // rola os X dados
+      let resultados = rollDice(innerCount, faces);
+      let exibicao = [...resultados];
+
+      // explosão
+      if (explode) {
+        let extras = handleExplode(resultados, faces);
+        totalExtras += extras;
+        while (extras > 0) {
+          const newRolls = rollDice(extras, faces);
+          resultados.push(...newRolls);
+          exibicao.push(...newRolls);
+          extras = handleExplode(newRolls, faces);
+          totalExtras += extras;
+        }
+      }
+
+      // aplica keep highest/lowest se tiver
+      const escolhidos = kType ? selectK(exibicao, kType, kQtd) : exibicao;
+      const total = escolhidos.reduce((a, b) => a + b, 0) + modificador;
+
+      let totalComEmoji = `${total}`;
+      if (escolhidos.includes(1)) totalComEmoji += " 💀";
+      if (escolhidos.includes(faces)) totalComEmoji += " 🥵";
+
+      const exibicaoFmt = exibicao
+        .map((r) => (r === 1 ? `${r} 💀` : r === faces ? `${r} 🥵` : `${r}`))
+        .join(", ");
+
+      linhas.push(`**${totalComEmoji}** <-- [ ${exibicaoFmt} ] ${tailDisplay}`);
+
+      if (!pushedEqualReaction && innerCount > 1 && allEqual(exibicao)) {
+        linhas.push(
+          allEqualReactions[Math.floor(Math.random() * allEqualReactions.length)]
+        );
+        pushedEqualReaction = true;
+      }
+    }
+
+    resposta = linhas.join("\n");
+    if (explode) resposta += `\n(${totalExtras} dados extras rolados) !`;
   } else {
-    const total = resultados.reduce((a, b) => a + b, 0);
-    const totalComMod = total + modificador;
-    let totalComEmoji = `${totalComMod}`;
+    // Caso padrão (sem #): uma única expressão
+    let resultados = rollDice(innerCount, faces);
+    let exibicao = [...resultados];
 
-    if (resultados.includes(1)) totalComEmoji += " 💀";
-    if (resultados.includes(faces) && (faces === 20 || faces === 100)) totalComEmoji += " 😋";
+    if (explode) {
+      let extras = handleExplode(resultados, faces);
+      totalExtras = extras;
+      while (extras > 0) {
+        const newRolls = rollDice(extras, faces);
+        resultados.push(...newRolls);
+        exibicao.push(...newRolls);
+        extras = handleExplode(newRolls, faces);
+        totalExtras += extras;
+      }
+    }
 
-    let resposta = `**${totalComEmoji}** <-- [ ${exibicao.join(", ")} ] ${quantidade}${separador}${faces}`;
+    const escolhidos = kType ? selectK(exibicao, kType, kQtd) : exibicao;
+    const total = escolhidos.reduce((a, b) => a + b, 0) + modificador;
 
-    if (modificador !== 0) resposta += ` ${modificador > 0 ? "+" : ""}${modificador}`;
+    let totalComEmoji = `${total}`;
+    if (escolhidos.includes(1)) totalComEmoji += " 💀";
+    if (escolhidos.includes(faces)) totalComEmoji += " 🥵";
 
-    await message.reply(resposta);
+    const exibicaoFmt = exibicao
+      .map((r) => (r === 1 ? `${r} 💀` : r === faces ? `${r} 🥵` : `${r}`))
+      .join(", ");
 
-    if (todosIguais && quantidade > 1) await message.channel.send("💥 pqp kk");
+    resposta = `**${totalComEmoji}** <-- [ ${exibicaoFmt} ] ${tailDisplay}`;
+
+    if (explode) resposta += `\n(${totalExtras} dados extras rolados) !`;
+    if (innerCount > 1 && allEqual(exibicao)) {
+      resposta += `\n${
+        allEqualReactions[Math.floor(Math.random() * allEqualReactions.length)]
+      }`;
+    }
   }
+
+  // ==================== ENVIO ====================
+  await message.reply({
+    content: resposta.trim(),
+    allowedMentions: { repliedUser: false }, // laranjinha sem marcar
+  });
 });
+
+
+
+
+// ---------------- Slash Commands ----------------
+// (restante do código de slash commands, embeds e registro permanecem iguais)
+
+client.login(process.env.TOKEN);
 
 // ---------------- Slash Commands ----------------
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -123,22 +258,29 @@ client.on(Events.InteractionCreate, async (interaction) => {
         .setStyle(ButtonStyle.Primary)
         .setDisabled(pageIndex === 0),
       new ButtonBuilder()
-        .setCustomId(`amaldiçoado_${Math.min(pageIndex + 1, embeds.length - 1)}`)
+        .setCustomId(
+          `amaldiçoado_${Math.min(pageIndex + 1, embeds.length - 1)}`,
+        )
         .setLabel("➡️")
         .setStyle(ButtonStyle.Primary)
-        .setDisabled(pageIndex === embeds.length - 1)
+        .setDisabled(pageIndex === embeds.length - 1),
     );
 
-    await interaction.update({ embeds: [embeds[pageIndex]], components: [row] });
+    await interaction.update({
+      embeds: [embeds[pageIndex]],
+      components: [row],
+    });
     return;
   }
 
   // ---------------- Comandos normais ----------------
   switch (interaction.commandName) {
-    case "ping":
-      await interaction.reply("Pong!");
+    case "eusd":
+      await interaction.reply("https://cdn.discordapp.com/attachments/1263135959306862672/1407619098438926456/Projeto_10-19_HD_720p_MEDIUM_FR30.mp4?ex=68a6c2f1&is=68a57171&hm=010af28477a62ffef466c2962c77025bbce06c0c4459ea4d6dc8e4813158465b&");
       break;
-
+      
+      
+      
     case "especialista":
       await interaction.reply(
         `土 Júpiter [ORDO] — 01/08/2025
@@ -147,26 +289,32 @@ Quando a gente fala do especialista, o problema dele é que todas as outras clas
 E fazem melhor ate
 O problema não é ele ser como é
 O problema é que ocultista é infinitamente melhor
-E sempre vai ser.`
+E sempre vai ser.`,
       );
       break;
-
     case "marcus":
       await interaction.reply("VIADO");
       break;
-
+    case "lankas":
+      await interaction.reply(
+        "Vou da cuzada nos adversarios, https://media.discordapp.net/attachments/1123193663959351347/1407505702049812530/meme_lankas_mamador.png?ex=68a65955&is=68a507d5&hm=9f2db0748d8a53cbe9dd0873d9d91d51b6949e5091154805cac3150ef0c13634&=&format=webp&quality=lossless&width=988&height=988",
+      );
+      break;
+    case "lankas2":
+      await interaction.reply(
+        "https://media.discordapp.net/attachments/1123193663959351347/1407505663289987113/lan_sendo_lan.png?ex=68a6594c&is=68a507cc&hm=074bf8d2f6b1f6f4480d1ec3a9879d893d5da3fe886ae6201726cba2d370fe4e&=&format=webp&quality=lossless&width=529&height=225, https://media.discordapp.net/attachments/1402459433132363906/1407523072445124749/image.png?ex=68a66982&is=68a51802&hm=5f7dc98dab9b27204a99414e17034357481f9a0e48fef77841c12882109c669b&=&format=webp&quality=lossless&width=415&height=298 ",
+      );
+      break;
     case "hb":
       await interaction.reply(
-        "https://docs.google.com/document/d/1X_FTz-PPvnhMeSLZR3A-Rcqhn8hKJluLf_dGZskAP_c/edit?usp=drivesdk"
+        "https://docs.google.com/document/d/1X_FTz-PPvnhMeSLZR3A-Rcqhn8hKJluLf_dGZskAP_c/edit?usp=drivesdk",
       );
       break;
-
     case "guia":
       await interaction.reply(
-        "https://docs.google.com/document/d/17wmZ7GJ9MZEs8TMtj2hxxunTfOc_1Eiiwgifis6DohQ/edit?usp=drivesdk"
+        "https://docs.google.com/document/d/17wmZ7GJ9MZEs8TMtj2hxxunTfOc_1Eiiwgifis6DohQ/edit?usp=drivesdk",
       );
       break;
-
     case "amaldiçoado":
       const embeds = getAmaldiçoadoEmbeds();
 
@@ -179,7 +327,7 @@ E sempre vai ser.`
         new ButtonBuilder()
           .setCustomId(`amaldiçoado_1`)
           .setLabel("➡️")
-          .setStyle(ButtonStyle.Primary)
+          .setStyle(ButtonStyle.Primary),
       );
 
       await interaction.reply({ embeds: [embeds[0]], components: [row] });
@@ -217,26 +365,47 @@ function getAmaldiçoadoEmbeds() {
     },
   ];
 
-  return textos.map((t) => new EmbedBuilder().setTitle(t.title).setDescription(t.description).setColor(7419530));
+  return textos.map((t) =>
+    new EmbedBuilder()
+      .setTitle(t.title)
+      .setDescription(t.description)
+      .setColor(7419530),
+  );
 }
 
 // ---------------- Registro dos comandos ----------------
 const commands = [
-  new SlashCommandBuilder().setName("ping").setDescription("mensagem de ping"),
-  new SlashCommandBuilder().setName("especialista").setDescription("Mensagem do especialista"),
-  new SlashCommandBuilder().setName("marcus").setDescription("mensagem do marcus"),
+  new SlashCommandBuilder().setName("eusd").setDescription("éusd"),
+  new SlashCommandBuilder()
+    .setName("especialista")
+    .setDescription("Mensagem do especialista"),
+  new SlashCommandBuilder()
+    .setName("marcus")
+    .setDescription("mensagem do marcus"),
+  new SlashCommandBuilder()
+    .setName("lankas")
+    .setDescription("mensagem do lankas"),
+  new SlashCommandBuilder()
+    .setName("lankas2")
+    .setDescription("mensagem do lankas"),
   new SlashCommandBuilder().setName("hb").setDescription("mensagem do hb"),
   new SlashCommandBuilder().setName("guia").setDescription("mensagem do guia"),
-  new SlashCommandBuilder().setName("amaldiçoado").setDescription("mensagem do amaldiçoado"),
+  new SlashCommandBuilder()
+    .setName("amaldiçoado")
+    .setDescription("mensagem do amaldiçoado"),
 ].map((cmd) => cmd.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
 
 (async () => {
   try {
-    await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), {
-      body: commands,
-    });
+    await rest.put(
+      Routes.applicationGuildCommands(
+        process.env.CLIENT_ID,
+        process.env.GUILD_ID,
+      ),
+      { body: commands },
+    );
     console.log("Slash command registered!");
   } catch (error) {
     console.error(error);
